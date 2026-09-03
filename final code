@@ -1,0 +1,263 @@
+CSA06 - Brute Force Algorithm Lab
+Selection Sort + Sequential Search + efficient comparison algorithms.
+Run: python brute_force_algorithm_lab.py
+Optional Parquet support: pip install pandas pyarrow
+"""
+import csv, random, threading, time
+from pathlib import Path
+from queue import Queue, Empty
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+
+DEFAULT_DATA=[42,17,8,93,26,55,11,68,34,5,79,21]
+SAFE_SELECTION_LIMIT=5000
+HYBRID_THRESHOLD=32
+
+def selection_sort(data):
+    a=list(data); comparisons=swaps=0
+    for i in range(len(a)-1):
+        m=i
+        for j in range(i+1,len(a)):
+            comparisons+=1
+            if a[j]<a[m]: m=j
+        if m!=i: a[i],a[m]=a[m],a[i]; swaps+=1
+    return a,comparisons,swaps
+
+def selection_steps(data):
+    a=list(data);rows=[];comparisons=swaps=0
+    for i in range(len(a)-1):
+        m=i
+        for j in range(i+1,len(a)):
+            comparisons+=1
+            if a[j]<a[m]:m=j
+        minimum=a[m];did_swap=m!=i
+        if did_swap:a[i],a[m]=a[m],a[i];swaps+=1
+        rows.append((i+1,minimum,m+1,"Yes" if did_swap else "No",list(a)))
+    return a,comparisons,swaps,rows
+
+def sequential_search(data,key):
+    for i,x in enumerate(data):
+        if x==key:return i, i+1
+    return -1,len(data)
+
+def merge_sort(data):
+    comparisons=0
+    def sort(a):
+        nonlocal comparisons
+        if len(a)<=1:return a
+        mid=len(a)//2;left=sort(a[:mid]);right=sort(a[mid:])
+        out=[];i=j=0
+        while i<len(left) and j<len(right):
+            comparisons+=1
+            if left[i]<=right[j]:out.append(left[i]);i+=1
+            else:out.append(right[j]);j+=1
+        out.extend(left[i:]);out.extend(right[j:]);return out
+    t=time.perf_counter();result=sort(list(data))
+    return result,comparisons,time.perf_counter()-t
+
+def hybrid_merge_insertion_sort(data,threshold=HYBRID_THRESHOLD):
+    comparisons=0
+    def insertion(a):
+        nonlocal comparisons
+        for i in range(1,len(a)):
+            key=a[i];j=i-1
+            while j>=0:
+                comparisons+=1
+                if a[j]>key:a[j+1]=a[j];j-=1
+                else:break
+            a[j+1]=key
+        return a
+    def sort(a):
+        nonlocal comparisons
+        if len(a)<=threshold:return insertion(a)
+        mid=len(a)//2;left=sort(a[:mid]);right=sort(a[mid:])
+        out=[];i=j=0
+        while i<len(left) and j<len(right):
+            comparisons+=1
+            if left[i]<=right[j]:out.append(left[i]);i+=1
+            else:out.append(right[j]);j+=1
+        out.extend(left[i:]);out.extend(right[j:]);return out
+    t=time.perf_counter();result=sort(list(data))
+    return result,comparisons,time.perf_counter()-t
+
+def binary_search(sorted_data,key):
+    lo,hi=0,len(sorted_data)-1;comparisons=0
+    while lo<=hi:
+        mid=(lo+hi)//2;comparisons+=1
+        if sorted_data[mid]==key:return mid,comparisons
+        if sorted_data[mid]<key:lo=mid+1
+        else:hi=mid-1
+    return -1,comparisons
+
+def selection_comparisons(n):return n*(n-1)//2
+
+def load_csv(path,limit=1000000):
+    with open(path,"r",encoding="utf-8-sig",newline="") as f:
+        reader=csv.DictReader(f)
+        if not reader.fieldnames:raise ValueError("CSV needs a header.")
+        cols=reader.fieldnames
+        values_by_col={c:[] for c in cols}
+        for row in reader:
+            for c in cols:
+                raw=row.get(c,"")
+                if raw in ("",None):continue
+                try:
+                    values_by_col[c].append(float(raw))
+                except ValueError:pass
+            if max((len(v) for v in values_by_col.values()),default=0)>=limit:break
+        numeric=[(c,v) for c,v in values_by_col.items() if v]
+        if not numeric:raise ValueError("No numeric column found.")
+        return numeric[0][1],numeric[0][0]
+
+def load_parquet(path,limit=1000000):
+    try:
+        import pandas as pd
+    except ImportError as e:
+        raise RuntimeError("Parquet needs pandas + pyarrow. Run: pip install pandas pyarrow") from e
+    df=pd.read_parquet(path)
+    cols=df.select_dtypes(include="number").columns.tolist()
+    if not cols:raise ValueError("No numeric column found.")
+    s=df[cols[0]].dropna().iloc[:limit]
+    return s.astype(float).tolist(),str(cols[0])
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__();self.title("Brute Force Algorithm Lab");self.geometry("1200x780")
+        self.data=DEFAULT_DATA[:];self.queue=Queue()
+        self.style=ttk.Style(self)
+        try:self.style.theme_use("clam")
+        except tk.TclError:pass
+        self._header();self._tabs();self._demo()
+        self.after(100,self._poll)
+    def _header(self):
+        f=ttk.Frame(self,padding=15);f.pack(fill="x")
+        ttk.Label(f,text="BRUTE FORCE ALGORITHM LAB",font=("Segoe UI",18,"bold")).pack(anchor="w")
+        ttk.Label(f,text="Selection Sort • Sequential Search • Merge Sort • Hybrid Sort • Binary Search").pack(anchor="w")
+        self.source=tk.StringVar(value="Source: assignment dataset");ttk.Label(f,textvariable=self.source).pack(anchor="w")
+    def _tabs(self):
+        nb=ttk.Notebook(self);nb.pack(fill="both",expand=True,padx=12,pady=12)
+        self.demo_tab=ttk.Frame(nb,padding=12);self.bench_tab=ttk.Frame(nb,padding=12)
+        self.search_tab=ttk.Frame(nb,padding=12);self.comp_tab=ttk.Frame(nb,padding=12)
+        for t,n in [(self.demo_tab,"Algorithm Demo"),(self.bench_tab,"Benchmark"),(self.search_tab,"Search Lab"),(self.comp_tab,"Complexity")]:nb.add(t,text=n)
+        self._demo_tab();self._bench_tab();self._search_tab();self._comp_tab()
+    def _demo_tab(self):
+        f=ttk.LabelFrame(self.demo_tab,text="Input");f.pack(fill="x")
+        self.input=tk.StringVar();ttk.Entry(f,textvariable=self.input).pack(side="left",fill="x",expand=True,padx=8,pady=8)
+        ttk.Button(f,text="Selection Sort",command=self.run_selection).pack(side="left",padx=4)
+        ttk.Button(f,text="Sequential Search",command=self.run_search).pack(side="left",padx=4)
+        pan=ttk.Panedwindow(self.demo_tab,orient="horizontal");pan.pack(fill="both",expand=True,pady=10)
+        lf=ttk.Frame(pan);rf=ttk.Frame(pan);pan.add(lf,weight=1);pan.add(rf,weight=1)
+        self.tree=ttk.Treeview(lf,columns=("pass","min","pos","swap","state"),show="headings")
+        for c,h,w in [("pass","Pass",55),("min","Minimum",80),("pos","Position",70),("swap","Swap",60),("state","Array State",420)]:
+            self.tree.heading(c,text=h);self.tree.column(c,width=w,anchor="center")
+        self.tree.pack(fill="both",expand=True)
+        self.demo_out=tk.Text(rf,font=("Consolas",10));self.demo_out.pack(fill="both",expand=True)
+    def _bench_tab(self):
+        f=ttk.LabelFrame(self.bench_tab,text="Experiment");f.pack(fill="x")
+        ttk.Label(f,text="Sizes:").pack(side="left",padx=5)
+        self.sizes=tk.StringVar(value="1000,2000,5000,10000,50000,100000,1000000")
+        ttk.Entry(f,textvariable=self.sizes,width=55).pack(side="left",padx=5)
+        self.analytic=tk.BooleanVar(value=True)
+        ttk.
+Checkbutton(f,text="Analytical Selection Sort for large n",variable=self.analytic).pack(side="left",padx=8)
+        ttk.Button(f,text="Run",command=self.run_benchmark).pack(side="left",padx=5)
+        ttk.Button(f,text="Load CSV/Parquet",command=self.load).pack(side="left",padx=5)
+        self.status=tk.StringVar(value="Ready.");ttk.Label(self.bench_tab,textvariable=self.status).pack(anchor="w",pady=5)
+        cols=("n","sel","comp","swap","merge","hybrid","mode")
+        self.bt=ttk.Treeview(self.bench_tab,columns=cols,show="headings")
+        heads={"n":"n","sel":"Selection s","comp":"Selection comparisons","swap":"Swaps","merge":"Merge s","hybrid":"Hybrid s","mode":"Selection mode"}
+        for c in cols:self.bt.heading(c,text=heads[c]);self.bt.column(c,width=145,anchor="center")
+        self.bt.pack(fill="both",expand=True)
+    def _search_tab(self):
+        f=ttk.Frame(self.search_tab);f.pack(fill="x")
+        ttk.Label(f,text="Key:").pack(side="left");self.key=tk.StringVar(value="68")
+        ttk.Entry(f,textvariable=self.key,width=12).pack(side="left",padx=5)
+        ttk.Button(f,text="Sequential",command=self.run_search).pack(side="left",padx=4)
+        ttk.Button(f,text="Binary",command=self.run_binary).pack(side="left",padx=4)
+        self.search_out=tk.Text(self.search_tab,font=("Consolas",10));self.search_out.pack(fill="both",expand=True,pady=10)
+    def _comp_tab(self):
+        text="""SELECTION SORT: Ω(n²), Θ(n²), O(n²), O(1) extra space
+Exact comparisons: n(n−1)/2
+
+SEQUENTIAL SEARCH: Ω(1), Θ(n), O(n), O(1) space
+
+MERGE SORT: Θ(n log n), O(n) extra space
+
+HYBRID MERGE/INSERTION: Θ(n log n) overall; insertion sort is used
+for partitions of size <= 32.
+
+BINARY SEARCH: Ω(1), O(log n), O(1) iterative space.
+Condition: the data must already be sorted.
+
+Why analytical mode?
+For n=1,000,000, Selection Sort requires exactly
+499,999,500,000 comparisons. Executing that loop in a GUI is
+not a meaningful practical experiment, so the exact operation
+count is shown analytically."""
+        box=tk.Text(self.comp_tab,font=("Segoe UI",11));box.pack(fill="both",expand=True);box.insert("1.0",text);box.config(state="disabled")
+    def _demo(self):
+        self.input.set(", ".join(map(str,DEFAULT_DATA)));self.run_selection();self.run_search()
+    def _values(self):
+        try:return [int(float(x.strip())) for x in self.input.get().split(",") if x.strip()]
+        except ValueError:messagebox.showerror("Input","Enter comma-separated numbers.");return None
+    def run_selection(self):
+        data=self._values()
+        if not data:return
+        for x in self.tree.get_children():self.tree.delete(x)
+        sorted_data,c,s,rows=selection_steps(data)
+        for row in rows:self.tree.insert("", "end", values=row)
+        self.demo_out.delete("1.0","end")
+        self.demo_out.insert("end",f"Input: {data}\nSorted: {sorted_data}\nComparisons: {c}\nSwaps: {s}\nFormula: n(n-1)/2 = {selection_comparisons(len(data))}\n")
+    def run_search(self):
+        data=self._values()
+        if not data:return
+        try:key=float(self.key.get());key=int(key) if key.is_integer() else key
+        except ValueError:messagebox.showerror("Key","Enter a numeric key.");return
+        pos,c=sequential_search(data,key)
+        self.search_out.delete("1.0","end");self.search_out.insert("end",f"Sequential Search\nData: {data}\nKey: {key}\nPosition: {pos+1 if pos>=0 else 'Not found'}\nComparisons: {c}\n")
+    def run_binary(self):
+        data=self._values()
+        if not data:return
+        try:key=float(self.key.get());key=int(key) if key.is_integer() else key
+        except ValueError:messagebox.showerror("Key","Enter a numeric key.");return
+        sorted_data,_,_=selection_sort(data);pos,c=binary_search(sorted_data,key)
+        self.search_out.delete("1.0","end");self.search_out.insert("end",f"Binary Search\nSorted: {sorted_data}\nKey: {key}\nPosition: {pos if pos>=0 else 'Not found'}\nComparisons: {c}\n")
+    def load(self):
+        p=filedialog.askopenfilename(filetypes=[("CSV","*.csv"),("Parquet","*.parquet")])
+        if not p:return
+        try:
+            vals,col=load_csv(p) if p.lower().endswith(".csv") else load_parquet(p)
+            self.data=vals;self.input.set(", ".join(map(str,vals[:20])))
+            self.source.set(f"Source: {Path(p).name} | numeric column: {col} | records: {len(vals):,}")
+            messagebox.showinfo("Loaded",f"Loaded {len(vals):,} numeric records from {col}.")
+        except Exception as e:messagebox.showerror("Dataset error",str(e))
+    def run_benchmark(self):
+        try:sizes=sorted(set(int(x.strip()) for x in self.sizes.get().split(",") if int(x.strip())>=2))
+        except Exception:messagebox.showerror("Sizes","Use comma-separated integers.");return
+        for x in self.bt.get_children():self.bt.delete(x)
+        self.status.set("Running...")
+        threading.Thread(target=self._worker,args=(sizes,),daemon=True).start()
+    def _worker(self,sizes):
+        base=self.data or DEFAULT_DATA;rng=random.Random(20260902)
+        for n in sizes:
+            d=list(base[:n]) if len(base)>=n else [rng.random()*1e6 for _ in range(n)]
+            if n<=SAFE_SELECTION_LIMIT or not self.analytic.get():
+                t=time.perf_counter();_,c,s=selection_sort(d);st=time.perf_counter()-t;mode="Measured"
+            else:
+                st=None;c=selection_comparisons(n);s="≤ n-1";mode="Analytical"
+            _,mc,mt=merge_sort(d);_,hc,ht=hybrid_merge_insertion_sort(d)
+            self.queue.put((n,st,c,s,mt,ht,mode))
+        self.queue.put(("DONE",))
+    def _poll(self):
+        try:
+            while True:
+                r=self.queue.get_nowait()
+                if r[0]=="DONE":self.status.set("Completed.")
+                else:
+                    n,st,c,s,mt,ht,mode=r
+                    self.bt.insert("", "end", values=(f"{n:,}",f"{st:.6f}" if st is not None else "N/A",f"{c:,}",s,f"{mt:.6f}",f"{ht:.6f}",mode))
+        except Empty:pass
+        self.after(100,self._poll)
+
+if __name__=="__main__":
+    App().mainloop()
